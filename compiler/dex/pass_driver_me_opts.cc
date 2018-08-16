@@ -27,10 +27,6 @@
 
 namespace art {
 
-const Pass* GetMorePassInstance() {
-    return new DummyPass;
-}
-
 void PassDriverMEOpts::SetupPasses(PassManager* pass_manager) {
   /*
    * Create the pass list. These passes are immutable and are shared across the threads.
@@ -56,7 +52,6 @@ void PassDriverMEOpts::SetupPasses(PassManager* pass_manager) {
   pass_manager->AddPass(new MethodUseCount);
   pass_manager->AddPass(new BBOptimizations);
   pass_manager->AddPass(new SuspendCheckElimination);
-  pass_manager->AddPass(GetMorePassInstance());
 }
 
 void PassDriverMEOpts::ApplyPass(PassDataHolder* data, const Pass* pass) {

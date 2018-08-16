@@ -136,9 +136,7 @@ MIRGraph::MIRGraph(CompilationUnit* cu, ArenaAllocator* arena)
       ifield_lowering_infos_(arena->Adapter(kArenaAllocLoweringInfo)),
       sfield_lowering_infos_(arena->Adapter(kArenaAllocLoweringInfo)),
       method_lowering_infos_(arena->Adapter(kArenaAllocLoweringInfo)),
-      suspend_checks_in_loops_(nullptr),
-      pass_failed_(false),
-      qcm(nullptr) {
+      suspend_checks_in_loops_(nullptr) {
   memset(&temp_, 0, sizeof(temp_));
   use_counts_.reserve(256);
   raw_use_counts_.reserve(256);
@@ -163,11 +161,8 @@ MIRGraph::MIRGraph(CompilationUnit* cu, ArenaAllocator* arena)
 MIRGraph::~MIRGraph() {
   STLDeleteElements(&block_list_);
   STLDeleteElements(&m_units_);
-  CleanupGraphData();
 }
 
-void MIRGraph::CleanupGraphData() {
-}
 /*
  * Parse an instruction, return the length of the instruction
  */
@@ -885,7 +880,7 @@ void MIRGraph::InlineMethod(const DexFile::CodeItem* code_item, uint32_t access_
   merged_df_flags_ = merged_df_flags;
 
   if (cu_->enable_debug & (1 << kDebugDumpCFG)) {
-    DumpCFG("/data/quick/1_post_parse_cfg/", true);
+    DumpCFG("/sdcard/1_post_parse_cfg/", true);
   }
 
   if (cu_->verbose) {
@@ -936,10 +931,9 @@ uint64_t MIRGraph::GetDataFlowAttributes(MIR* mir) {
 // It's possible the path is not valid, or some other errors appear. In that case return false.
 static bool CreateDumpFile(std::string& fname, const char* dir_prefix, NarrowDexOffset start_offset,
                            const char *suffix, int nr, std::string* output) {
-  std::string dir = StringPrintf("%s", dir_prefix);
-  errno = 0;
+  std::string dir = StringPrintf("./%s", dir_prefix);
   int64_t max_name_length = pathconf(dir.c_str(), _PC_NAME_MAX);
-  if (max_name_length <= 0 && errno != 0) {
+  if (max_name_length <= 0) {
     PLOG(ERROR) << "Could not get file name restrictions for " << dir;
     return false;
   }
@@ -956,10 +950,6 @@ static bool CreateDumpFile(std::string& fname, const char* dir_prefix, NarrowDex
 
   *output = StringPrintf("%s%s", dir_prefix, name.c_str());
   return true;
-}
-
-const char * MIRGraph::GetExtendedMirOpName(int index) {
-    return extended_mir_op_names_[index];
 }
 
 // TODO: use a configurable base prefix, and adjust callers to supply pass name.
@@ -1014,7 +1004,7 @@ void MIRGraph::DumpCFG(const char* dir_prefix, bool all_blocks, const char *suff
                       mir->ssa_rep ? GetDalvikDisassembly(mir) :
                       !MIR::DecodedInstruction::IsPseudoMirOp(opcode) ?
                         Instruction::Name(mir->dalvikInsn.opcode) :
-                        MIRGraph::GetExtendedMirOpName(opcode - kMirOpFirst),
+                        extended_mir_op_names_[opcode - kMirOpFirst],
                       (mir->optimization_flags & MIR_IGNORE_RANGE_CHECK) != 0 ? " no_rangecheck" : " ",
                       (mir->optimization_flags & MIR_IGNORE_NULL_CHECK) != 0 ? " no_nullcheck" : " ",
                       (mir->optimization_flags & MIR_IGNORE_SUSPEND_CHECK) != 0 ? " no_suspendcheck" : " ",
@@ -1317,7 +1307,7 @@ void MIRGraph::DisassembleExtendedInstr(const MIR* mir, std::string* decoded_mir
     return;  // It is not an extended instruction.
   }
 
-  decoded_mir->append(MIRGraph::GetExtendedMirOpName(opcode - kMirOpFirst));
+  decoded_mir->append(extended_mir_op_names_[opcode - kMirOpFirst]);
 
   switch (opcode) {
     case kMirOpPhi: {
@@ -1520,7 +1510,7 @@ char* MIRGraph::GetDalvikDisassembly(const MIR* mir) {
 
   // Handle special cases that recover the original dalvik instruction.
   if (opcode == kMirOpCheck) {
-    str.append(MIRGraph::GetExtendedMirOpName(opcode - kMirOpFirst));
+    str.append(extended_mir_op_names_[opcode - kMirOpFirst]);
     str.append(": ");
     // Recover the original Dex instruction.
     insn = mir->meta.throw_insn->dalvikInsn;

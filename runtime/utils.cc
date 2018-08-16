@@ -18,7 +18,6 @@
 
 #include <inttypes.h>
 #include <pthread.h>
-#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
@@ -366,6 +365,11 @@ std::string PrettyMethod(ArtMethod* m, bool with_signature) {
     }
     result = PrettyReturnType(sig_as_string.c_str()) + " " + result +
         PrettyArguments(sig_as_string.c_str());
+  }
+  if (UNLIKELY(m->IsXposedHookedMethod())) {
+    result += " [XposedHooked]";
+  } else if (UNLIKELY(m->IsXposedOriginalMethod())) {
+    result += " [XposedOriginal]";
   }
   return result;
 }

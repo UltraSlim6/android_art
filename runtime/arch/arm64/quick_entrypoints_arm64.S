@@ -569,18 +569,18 @@ SAVE_SIZE_AND_METHOD=SAVE_SIZE+8
     // W10 - temporary
     add x9, sp, #8                         // Destination address is bottom of stack + null.
 
-    // Copy parameters into the stack. Use numeric label as this is a macro and Clang's assembler
-    // does not have unique-id variables.
-1:
+    // Use \@ to differentiate between macro invocations.
+.LcopyParams\@:
     cmp w2, #0
-    beq 2f
+    beq .LendCopyParams\@
     sub w2, w2, #4      // Need 65536 bytes of range.
     ldr w10, [x1, x2]
     str w10, [x9, x2]
 
-    b 1b
+    b .LcopyParams\@
 
-2:
+.LendCopyParams\@:
+
     // Store null into ArtMethod* at bottom of frame.
     str xzr, [sp]
 .endm
@@ -619,29 +619,26 @@ SAVE_SIZE_AND_METHOD=SAVE_SIZE+8
     // Store result (w0/x0/s0/d0) appropriately, depending on resultType.
     ldrb w10, [x5]
 
-    // Check the return type and store the correct register into the jvalue in memory.
-    // Use numeric label as this is a macro and Clang's assembler does not have unique-id variables.
-
     // Don't set anything for a void type.
     cmp w10, #'V'
-    beq 3f
+    beq .Lexit_art_quick_invoke_stub\@
 
-    // Is it a double?
     cmp w10, #'D'
-    bne 1f
+    bne .Lreturn_is_float\@
     str d0, [x4]
-    b 3f
+    b .Lexit_art_quick_invoke_stub\@
 
-1:  // Is it a float?
+.Lreturn_is_float\@:
     cmp w10, #'F'
-    bne 2f
+    bne .Lreturn_is_int\@
     str s0, [x4]
-    b 3f
+    b .Lexit_art_quick_invoke_stub\@
 
-2:  // Just store x0. Doesn't matter if it is 64 or 32 bits.
+    // Just store x0. Doesn't matter if it is 64 or 32 bits.
+.Lreturn_is_int\@:
     str x0, [x4]
 
-3:  // Finish up.
+.Lexit_art_quick_invoke_stub\@:
     ldp x2, x19, [xFP, #32]   // Restore stack pointer and x19.
     .cfi_restore x19
     mov sp, x2

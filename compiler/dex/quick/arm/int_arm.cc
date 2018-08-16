@@ -754,7 +754,8 @@ RegLocation ArmMir2Lir::GenDivRem(RegLocation rl_dest, RegStorage reg1, RegStora
 
     RegStorage temp = AllocTemp();
     OpRegRegReg(kOpDiv, temp, reg1, reg2);
-    NewLIR4(kThumb2Mls, rl_result.reg.GetReg(), temp.GetReg(), reg2.GetReg(), reg1.GetReg());
+    OpRegReg(kOpMul, temp, reg2);
+    OpRegRegReg(kOpSub, rl_result.reg, reg1, temp);
     FreeTemp(temp);
   }
 

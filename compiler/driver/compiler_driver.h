@@ -43,12 +43,6 @@
 #include "utils/dex_cache_arrays_layout.h"
 #include "utils/swap_space.h"
 
-#ifdef QC_STRONG
-#define QC_WEAK
-#else
-#define QC_WEAK __attribute__((weak))
-#endif
-
 namespace art {
 
 namespace mirror {
@@ -333,7 +327,7 @@ class CompilerDriver {
       Handle<mirror::ClassLoader> class_loader, const DexCompilationUnit* mUnit,
       mirror::Class* referrer_class, ArtMethod* resolved_method, InvokeType* invoke_type,
       MethodReference* target_method, const MethodReference* devirt_target,
-      uintptr_t* direct_code, uintptr_t* direct_method)
+      uintptr_t* direct_code, uintptr_t* direct_method, bool is_quickened = false)
     SHARED_LOCKS_REQUIRED(Locks::mutator_lock_);
 
   // Is method's class initialized for an invoke?
@@ -478,9 +472,6 @@ class CompilerDriver {
   void SetHadHardVerifierFailure() {
     had_hard_verifier_failure_ = true;
   }
-
-  // get the status map associated with a thread
-  SafeMap<int32_t, int32_t> *GetStatusMap(Thread *self) QC_WEAK;
 
  private:
   // Return whether the declaring class of `resolved_member` is
@@ -696,7 +687,6 @@ class CompilerDriver {
 
   bool support_boot_image_fixup_;
 
-  std::unique_ptr<std::vector<SafeMap<int32_t, int32_t>>> status_map_;
   // DeDuplication data structures, these own the corresponding byte arrays.
   template <typename ContentType>
   class DedupeHashFunc {

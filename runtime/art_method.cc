@@ -32,10 +32,12 @@
 #include "mapping_table.h"
 #include "mirror/abstract_method.h"
 #include "mirror/class-inl.h"
+#include "mirror/method.h"
 #include "mirror/object_array-inl.h"
 #include "mirror/object-inl.h"
 #include "mirror/string.h"
 #include "scoped_thread_state_change.h"
+#include "thread_list.h"
 #include "well_known_classes.h"
 
 namespace art {
@@ -47,6 +49,9 @@ extern "C" void art_quick_invoke_static_stub(ArtMethod*, uint32_t*, uint32_t, Th
                                              const char*);
 #endif
 
+jclass ArtMethod::xposed_callback_class = nullptr;
+jmethodID ArtMethod::xposed_callback_method = nullptr;
+
 ArtMethod* ArtMethod::FromReflectedMethod(const ScopedObjectAccessAlreadyRunnable& soa,
                                           jobject jlr_method) {
   auto* abstract_method = soa.Decode<mirror::AbstractMethod*>(jlr_method);
@@ -55,7 +60,7 @@ ArtMethod* ArtMethod::FromReflectedMethod(const ScopedObjectAccessAlreadyRunnabl
 }
 
 mirror::String* ArtMethod::GetNameAsString(Thread* self) {
-  CHECK(!IsProxyMethod());
+  CHECK(!IsProxyMethod(true));
   StackHandleScope<1> hs(self);
   Handle<mirror::DexCache> dex_cache(hs.NewHandle(GetDexCache()));
   auto* dex_file = dex_cache->GetDexFile();
@@ -123,7 +128,7 @@ ArtMethod* ArtMethod::FindOverriddenMethod(size_t pointer_size) {
     result = super_class->GetVTableEntry(method_index, pointer_size);
   } else {
     // Method didn't override superclass method so search interfaces
-    if (IsProxyMethod()) {
+    if (IsProxyMethod(true)) {
       result = GetDexCacheResolvedMethods()->GetElementPtrSize<ArtMethod*>(
           GetDexMethodIndex(), pointer_size);
       CHECK_EQ(result,
@@ -468,7 +473,7 @@ static uint32_t GetNumberOfReferenceArgsWithoutReceiver(ArtMethod* method)
 QuickMethodFrameInfo ArtMethod::GetQuickFrameInfo() {
   Runtime* runtime = Runtime::Current();
 
-  if (UNLIKELY(IsAbstract())) {
+  if (UNLIKELY(IsAbstract()) || IsXposedHookedMethod()) {
     return runtime->GetCalleeSaveMethodFrameInfo(Runtime::kRefsAndArgs);
   }
 
@@ -484,7 +489,7 @@ QuickMethodFrameInfo ArtMethod::GetQuickFrameInfo() {
   // quick method not a stub. However, if instrumentation stubs are installed, the
   // instrumentation->GetQuickCodeFor() returns the artQuickProxyInvokeHandler instead of an
   // oat code pointer, thus we have to add a special case here.
-  if (UNLIKELY(IsProxyMethod())) {
+  if (UNLIKELY(IsProxyMethod(true))) {
     if (IsDirect()) {
       CHECK(IsConstructor());
       return GetQuickFrameInfo(EntryPointToCodePointer(GetEntryPointFromQuickCompiledCode()));
@@ -519,6 +524,10 @@ QuickMethodFrameInfo ArtMethod::GetQuickFrameInfo() {
 }
 
 void ArtMethod::RegisterNative(const void* native_method, bool is_fast) {
+  if (UNLIKELY(IsXposedHookedMethod())) {
+    GetXposedOriginalMethod()->RegisterNative(native_method, is_fast);
+    return;
+  }
   CHECK(IsNative()) << PrettyMethod(this);
   CHECK(!IsFastNative()) << PrettyMethod(this);
   CHECK(native_method != nullptr) << PrettyMethod(this);
@@ -529,6 +538,10 @@ void ArtMethod::RegisterNative(const void* native_method, bool is_fast) {
 }
 
 void ArtMethod::UnregisterNative() {
+  if (UNLIKELY(IsXposedHookedMethod())) {
+    GetXposedOriginalMethod()->UnregisterNative();
+    return;
+  }
   CHECK(IsNative() && !IsFastNative()) << PrettyMethod(this);
   // restore stub to lookup native pointer via dlsym
   RegisterNative(GetJniDlsymLookupStub(), false);
@@ -558,6 +571,83 @@ bool ArtMethod::EqualParameters(Handle<mirror::ObjectArray<mirror::Class>> param
     }
   }
   return true;
+}
+
+static void StackReplaceMethod(Thread* thread, void* arg)
+    EXCLUSIVE_LOCKS_REQUIRED(Locks::mutator_lock_) {
+  struct StackReplaceMethodVisitor FINAL : public StackVisitor {
+    StackReplaceMethodVisitor(Thread* thread_in, ArtMethod* search, ArtMethod* replace)
+        : StackVisitor(thread_in, nullptr, StackVisitor::StackWalkKind::kSkipInlinedFrames),
+          search_(search), replace_(replace) {};
+
+    bool VisitFrame() EXCLUSIVE_LOCKS_REQUIRED(Locks::mutator_lock_) {
+      if (GetMethod() == search_) {
+        SetMethod(replace_);
+      }
+      return true;
+    }
+
+    ArtMethod* search_;
+    ArtMethod* replace_;
+  };
+
+  ArtMethod* search = reinterpret_cast<ArtMethod*>(arg);
+
+  // We cannot use GetXposedOriginalMethod() because the access flags aren't modified yet.
+  auto hook_info = reinterpret_cast<const XposedHookInfo*>(search->GetEntryPointFromJni());
+  ArtMethod* replace = hook_info->original_method;
+
+  StackReplaceMethodVisitor visitor(thread, search, replace);
+  visitor.WalkStack();
+}
+
+void ArtMethod::EnableXposedHook(ScopedObjectAccess& soa, jobject additional_info) {
+  if (UNLIKELY(IsXposedHookedMethod())) {
+    // Already hooked
+    return;
+  } else if (UNLIKELY(IsXposedOriginalMethod())) {
+    // This should never happen
+    ThrowIllegalArgumentException(StringPrintf("Cannot hook the method backup: %s", PrettyMethod(this).c_str()).c_str());
+    return;
+  }
+
+  // Create a backup of the ArtMethod object
+  auto* cl = Runtime::Current()->GetClassLinker();
+  ArtMethod* backup_method = cl->AllocArtMethodArray(soa.Self(), 1);
+  backup_method->CopyFrom(this, cl->GetImagePointerSize());
+  backup_method->SetAccessFlags(backup_method->GetAccessFlags() | kAccXposedOriginalMethod);
+
+  // Create a Method/Constructor object for the backup ArtMethod object
+  mirror::AbstractMethod* reflect_method;
+  if (IsConstructor()) {
+    reflect_method = mirror::Constructor::CreateFromArtMethod(soa.Self(), backup_method);
+  } else {
+    reflect_method = mirror::Method::CreateFromArtMethod(soa.Self(), backup_method);
+  }
+  reflect_method->SetAccessible<false>(true);
+
+  // Save extra information in a separate structure, stored instead of the native method
+  XposedHookInfo* hook_info = reinterpret_cast<XposedHookInfo*>(calloc(1, sizeof(XposedHookInfo)));
+  hook_info->reflected_method = soa.Vm()->AddGlobalRef(soa.Self(), reflect_method);
+  hook_info->additional_info = soa.Env()->NewGlobalRef(additional_info);
+  hook_info->original_method = backup_method;
+  SetEntryPointFromJni(reinterpret_cast<uint8_t*>(hook_info));
+
+  ThreadList* tl = Runtime::Current()->GetThreadList();
+  soa.Self()->TransitionFromRunnableToSuspended(kSuspended);
+  tl->SuspendAll("Hooking method");
+  {
+    MutexLock mu(soa.Self(), *Locks::thread_list_lock_);
+    tl->ForEach(StackReplaceMethod, this);
+  }
+  tl->ResumeAll();
+  soa.Self()->TransitionFromSuspendedToRunnable();
+
+  SetEntryPointFromQuickCompiledCode(GetQuickProxyInvokeHandler());
+  SetEntryPointFromInterpreter(artInterpreterToCompiledCodeBridge);
+
+  // Adjust access flags
+  SetAccessFlags((GetAccessFlags() & ~kAccNative & ~kAccSynchronized) | kAccXposedHookedMethod);
 }
 
 }  // namespace art

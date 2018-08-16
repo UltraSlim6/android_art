@@ -146,9 +146,7 @@ inline void Mir2Lir::SetupRegMask(ResourceMask* mask, int reg) {
   DCHECK_EQ((reg & ~RegStorage::kRegValMask), 0);
   DCHECK_LT(static_cast<size_t>(reg), reginfo_map_.size());
   DCHECK(reginfo_map_[reg] != nullptr) << "No info for 0x" << reg;
-  if (reginfo_map_[reg]) {
-    *mask = mask->Union(reginfo_map_[reg]->DefUseMask());
-  }
+  *mask = mask->Union(reginfo_map_[reg]->DefUseMask());
 }
 
 /*

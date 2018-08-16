@@ -243,6 +243,12 @@ class ShadowFrame {
     return method_;
   }
 
+  void SetMethod(ArtMethod* method) EXCLUSIVE_LOCKS_REQUIRED(Locks::mutator_lock_) {
+    DCHECK(method != nullptr);
+    DCHECK(method_ != nullptr);
+    method_ = method;
+  }
+
   mirror::Object* GetThisObject() const SHARED_LOCKS_REQUIRED(Locks::mutator_lock_);
 
   mirror::Object* GetThisObject(uint16_t num_ins) const SHARED_LOCKS_REQUIRED(Locks::mutator_lock_);
@@ -434,6 +440,8 @@ class StackVisitor {
       return nullptr;
     }
   }
+
+  void SetMethod(ArtMethod* method) EXCLUSIVE_LOCKS_REQUIRED(Locks::mutator_lock_);
 
   bool IsShadowFrame() const {
     return cur_shadow_frame_ != nullptr;

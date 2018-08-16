@@ -36,9 +36,6 @@ class InstructionSimplifier : public HOptimization {
   static constexpr const char* kInstructionSimplifierPassName = "instruction_simplifier";
 
   void Run() OVERRIDE;
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(InstructionSimplifier);
 };
 
 }  // namespace art

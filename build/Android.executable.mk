@@ -28,7 +28,6 @@ ART_EXECUTABLES_CFLAGS :=
 # $(5): target or host
 # $(6): ndebug or debug
 # $(7): value for LOCAL_MULTILIB (empty means default)
-# $(8): value for LOCAL_SANITIZE (empty means default)
 define build-art-executable
   ifneq ($(5),target)
     ifneq ($(5),host)
@@ -48,7 +47,6 @@ define build-art-executable
   art_target_or_host := $(5)
   art_ndebug_or_debug := $(6)
   art_multilib := $(7)
-  art_local_sanitize := $(8)
   art_out_binary_name :=
 
   include $(CLEAR_VARS)
@@ -70,8 +68,6 @@ define build-art-executable
   ifneq ($$(HOST_OS)-$$(art_target_or_host),darwin-host)
     LOCAL_LDFLAGS := -Wl,--export-dynamic
   endif
-
-  LOCAL_SANITIZE := $$(art_local_sanitize)
 
   ifeq ($$(art_target_or_host),target)
   	$(call set-target-local-clang-vars)
@@ -153,7 +149,6 @@ define build-art-executable
   art_ndebug_or_debug :=
   art_multilib :=
   art_out_binary_name :=
-  art_local_sanitize :=
 
 endef
 

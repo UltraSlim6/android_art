@@ -74,10 +74,6 @@
 
 namespace art {
 
-#ifndef DISABLE_CAF_BAILOUT
-extern thread_local bool check_bail_out;
-#endif
-
 static constexpr bool kTimeCompileMethod = !kIsDebugBuild;
 
 // Whether to produce 64-bit ELF files for 64-bit targets.
@@ -388,7 +384,6 @@ CompilerDriver::CompilerDriver(const CompilerOptions* compiler_options,
       timings_logger_(timer),
       compiler_context_(nullptr),
       support_boot_image_fixup_(instruction_set != kMips && instruction_set != kMips64),
-      status_map_(new std::vector<SafeMap<int32_t, int32_t>>(thread_count)),
       dedupe_code_("dedupe code", *swap_space_allocator_),
       dedupe_src_mapping_table_("dedupe source mapping table", *swap_space_allocator_),
       dedupe_mapping_table_("dedupe mapping table", *swap_space_allocator_),
@@ -517,7 +512,8 @@ DexToDexCompilationLevel CompilerDriver::GetDexToDexCompilationlevel(
     Thread* self, Handle<mirror::ClassLoader> class_loader, const DexFile& dex_file,
     const DexFile::ClassDef& class_def) {
   auto* const runtime = Runtime::Current();
-  if (runtime->UseJit() || GetCompilerOptions().VerifyAtRuntime()) {
+  const bool is_recompiling = dex_file.GetOatDexFile() != nullptr;
+  if (runtime->UseJit() || GetCompilerOptions().VerifyAtRuntime() || is_recompiling) {
     // Verify at runtime shouldn't dex to dex since we didn't resolve of verify.
     return kDontDexToDexCompile;
   }
@@ -1373,7 +1369,9 @@ void CompilerDriver::GetCodeAndMethodForDirectCall(InvokeType* type, InvokeType 
   gc::Heap* const heap = runtime->GetHeap();
   auto* cl = runtime->GetClassLinker();
   const auto pointer_size = cl->GetImagePointerSize();
-  bool use_dex_cache = GetCompilerOptions().GetCompilePic();  // Off by default
+  // Direct branching to the method's code offset means that Xposed hooks are not considered.
+  // So we always need to go through the dex cache/ArtMethod.
+  bool use_dex_cache = true;
   const bool compiling_boot = heap->IsCompilingBoot();
   // TODO This is somewhat hacky. We should refactor all of this invoke codepath.
   const bool force_relocations = (compiling_boot ||
@@ -1935,12 +1933,6 @@ static void VerifyClass(const ParallelCompilationManager* manager, size_t class_
 
     CHECK(klass->IsCompileTimeVerified() || klass->IsErroneous())
         << PrettyDescriptor(klass.Get()) << ": state=" << klass->GetStatus();
-
-    // It is *very* problematic if there are verification errors in the boot classpath. For example,
-    // we rely on things working OK without verification when the decryption dialog is brought up.
-    // So abort in a debug build if we find this violated.
-    DCHECK(!manager->GetCompiler()->IsImage() || klass->IsVerified()) << "Boot classpath class " <<
-        PrettyClass(klass.Get()) << " failed to fully verify.";
   }
   soa.Self()->AssertNoPendingException();
 }
@@ -2174,13 +2166,6 @@ void CompilerDriver::CompileClass(const ParallelCompilationManager* manager,
 
   CompilerDriver* const driver = manager->GetCompiler();
 
-  // reset the status map properly
-  SafeMap<int32_t, int32_t> *status_map = driver->GetStatusMap(self);
-
-  if (status_map != nullptr) {
-    status_map->clear();
-  }
-
   // Can we run DEX-to-DEX compiler on this class ?
   DexToDexCompilationLevel dex_to_dex_compilation_level = kDontDexToDexCompile;
   {
@@ -2296,9 +2281,6 @@ void CompilerDriver::CompileMethod(Thread* self, const DexFile::CodeItem* code_i
                    IsMethodToCompile(method_ref);
     if (compile) {
       // NOTE: if compiler declines to compile this method, it will return null.
-#ifndef DISABLE_CAF_BAILOUT
-      check_bail_out = false;
-#endif
       compiled_method = compiler_->Compile(code_item, access_flags, invoke_type, class_def_idx,
                                            method_idx, class_loader, dex_file);
     }
@@ -2540,10 +2522,6 @@ bool CompilerDriver::IsStringInit(uint32_t method_index, const DexFile* dex_file
   size_t pointer_size = InstructionSetPointerSize(GetInstructionSet());
   *offset = inliner->GetOffsetForStringInit(method_index, pointer_size);
   return inliner->IsStringInitMethodIndex(method_index);
-}
-
-SafeMap<int32_t, int32_t> *CompilerDriver::GetStatusMap(Thread *) {
-  return nullptr;
 }
 
 }  // namespace art
