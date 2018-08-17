@@ -517,7 +517,8 @@ DexToDexCompilationLevel CompilerDriver::GetDexToDexCompilationlevel(
     Thread* self, Handle<mirror::ClassLoader> class_loader, const DexFile& dex_file,
     const DexFile::ClassDef& class_def) {
   auto* const runtime = Runtime::Current();
-  if (runtime->UseJit() || GetCompilerOptions().VerifyAtRuntime()) {
+  const bool is_recompiling = dex_file.GetOatDexFile() != nullptr;
+  if (runtime->UseJit() || GetCompilerOptions().VerifyAtRuntime() || is_recompiling) {
     // Verify at runtime shouldn't dex to dex since we didn't resolve of verify.
     return kDontDexToDexCompile;
   }
@@ -1373,7 +1374,9 @@ void CompilerDriver::GetCodeAndMethodForDirectCall(InvokeType* type, InvokeType 
   gc::Heap* const heap = runtime->GetHeap();
   auto* cl = runtime->GetClassLinker();
   const auto pointer_size = cl->GetImagePointerSize();
-  bool use_dex_cache = GetCompilerOptions().GetCompilePic();  // Off by default
+  // Direct branching to the method's code offset means that Xposed hooks are not considered.
+  // So we always need to go through the dex cache/ArtMethod.
+  bool use_dex_cache = true;
   const bool compiling_boot = heap->IsCompilingBoot();
   // TODO This is somewhat hacky. We should refactor all of this invoke codepath.
   const bool force_relocations = (compiling_boot ||
@@ -1935,12 +1938,6 @@ static void VerifyClass(const ParallelCompilationManager* manager, size_t class_
 
     CHECK(klass->IsCompileTimeVerified() || klass->IsErroneous())
         << PrettyDescriptor(klass.Get()) << ": state=" << klass->GetStatus();
-
-    // It is *very* problematic if there are verification errors in the boot classpath. For example,
-    // we rely on things working OK without verification when the decryption dialog is brought up.
-    // So abort in a debug build if we find this violated.
-    DCHECK(!manager->GetCompiler()->IsImage() || klass->IsVerified()) << "Boot classpath class " <<
-        PrettyClass(klass.Get()) << " failed to fully verify.";
   }
   soa.Self()->AssertNoPendingException();
 }

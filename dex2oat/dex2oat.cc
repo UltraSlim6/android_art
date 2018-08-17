@@ -66,6 +66,7 @@
 #include "mirror/class_loader.h"
 #include "mirror/object-inl.h"
 #include "mirror/object_array-inl.h"
+#include "oat_file_assistant.h"
 #include "oat_writer.h"
 #include "os.h"
 #include "runtime.h"
@@ -846,7 +847,7 @@ class Dex2Oat FINAL {
       } else if (option == "--abort-on-hard-verifier-error") {
         abort_on_hard_verifier_error = true;
       } else {
-        Usage("Unknown argument %s", option.data());
+        LOG(WARNING) << StringPrintf("Unknown argument %s", option.data());
       }
     }
 
@@ -1017,7 +1018,7 @@ class Dex2Oat FINAL {
     } else if (strcmp(compiler_filter_string, "time") == 0) {
       compiler_filter = CompilerOptions::kTime;
     } else {
-      Usage("Unknown --compiler-filter value %s", compiler_filter_string);
+      LOG(WARNING) << StringPrintf("Unknown --compiler-filter value %s", compiler_filter_string);
     }
 
     // It they are not set, use default values for inlining settings.
@@ -1106,6 +1107,7 @@ class Dex2Oat FINAL {
                             compile_pic ? OatHeader::kTrueValue : OatHeader::kFalseValue);
       key_value_store_->Put(OatHeader::kDebuggableKey,
                             debuggable ? OatHeader::kTrueValue : OatHeader::kFalseValue);
+      key_value_store_->Put(OatHeader::kXposedOatVersionKey, OatHeader::kXposedOatCurrentVersion);
     }
   }
 
@@ -1168,6 +1170,18 @@ class Dex2Oat FINAL {
     oat_file_.reset();
   }
 
+  static std::string PathFromFd(int fd) {
+    std::string fdpath(StringPrintf("/proc/self/fd/%d", fd));
+    std::unique_ptr<char[]> buf(new char[PATH_MAX]);
+    ssize_t len = readlink(fdpath.c_str(), buf.get(), PATH_MAX - 1);
+    if (len >= 0) {
+      return std::string(buf.get(), len);
+    } else {
+      LOG(WARNING) << StringPrintf("Could not resolve file descriptor %d: %s", fd, strerror(errno));
+      return nullptr;
+    }
+  }
+
   // Set up the environment for compilation. Includes starting the runtime and loading/opening the
   // boot class path.
   bool Setup() {
@@ -1208,6 +1222,15 @@ class Dex2Oat FINAL {
 
     if (!CreateRuntime(runtime_options)) {
       return false;
+    }
+
+    if (!image_ && zip_fd_ > 0 && (zip_location_from_fd_ = PathFromFd(zip_fd_)) != nullptr) {
+      oat_file_assistant_ = new OatFileAssistant(zip_location_from_fd_.c_str(), instruction_set_, false);
+      if (oat_file_assistant_->OdexFileExists()) {
+        LOG(INFO) << "Using '" << *oat_file_assistant_->OdexFileName() << "' instead of file descriptor";
+        dex_filenames_.push_back(oat_file_assistant_->OdexFileName()->c_str());
+        dex_locations_.push_back(zip_location_from_fd_.c_str());
+      }
     }
 
     // Runtime::Create acquired the mutator_lock_ that is normally given away when we
@@ -1334,8 +1357,16 @@ class Dex2Oat FINAL {
     }
     // Ensure opened dex files are writable for dex-to-dex transformations.
     for (const auto& dex_file : dex_files_) {
-      if (!dex_file->EnableWrite()) {
+      if (dex_file->GetOatDexFile() == nullptr && !dex_file->EnableWrite()) {
         PLOG(ERROR) << "Failed to make .dex file writeable '" << dex_file->GetLocation() << "'\n";
+      }
+    }
+
+    if (image_) {
+      auto const oat_dex_file = dex_files_[0]->GetOatDexFile();
+      if (oat_dex_file != nullptr) {
+        uint32_t checksum = oat_dex_file->GetOatFile()->GetOatHeader().GetChecksum();
+        key_value_store_->Put(OatHeader::kXposedOriginalChecksumKey, StringPrintf("0x%08x", checksum));
       }
     }
 
@@ -1900,6 +1931,8 @@ class Dex2Oat FINAL {
   std::vector<const char*> dex_locations_;
   int zip_fd_;
   std::string zip_location_;
+  std::string zip_location_from_fd_;
+  OatFileAssistant* oat_file_assistant_;
   std::string boot_image_option_;
   std::vector<const char*> runtime_args_;
   std::string image_filename_;
